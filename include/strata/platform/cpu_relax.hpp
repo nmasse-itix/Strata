@@ -9,8 +9,15 @@
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
 #include <immintrin.h>
 #define STRATA_X86 1
-inline void strata_cpu_pause() { _mm_pause(); }
-inline void strata_store_fence() { _mm_sfence(); }
+// Forced inline like the intrinsics themselves: a plain `inline` wrapper changed GCC 13's inlining in verify.cpp's
+// cold paths, and the x86 engine is meant to stay the same machine code as with the intrinsics written out.
+#if defined(_MSC_VER)
+#define STRATA_RELAX_INLINE __forceinline
+#else
+#define STRATA_RELAX_INLINE inline __attribute__((always_inline))
+#endif
+STRATA_RELAX_INLINE void strata_cpu_pause() { _mm_pause(); }
+STRATA_RELAX_INLINE void strata_store_fence() { _mm_sfence(); }
 #elif defined(__aarch64__) && defined(__APPLE__)
 inline void strata_cpu_pause() { __asm__ __volatile__("yield"); }
 inline void strata_store_fence() { __asm__ __volatile__("dmb ishst" ::: "memory"); }
