@@ -50,6 +50,7 @@ memory. More memory gives a bigger model or a faster one.
 | **Intel** Arc | [Intel Arc](docs/INTEL_ARC.md), [Intel engine](docs/INTEL.md) |
 | **Apple Silicon Mac** (M1 or newer, macOS 15 or newer) | [Mac](docs/MAC.md) |
 | **AMD Ryzen AI Max (Strix Halo)** and other unified-memory systems | [Strix Halo](docs/STRIX_HALO.md) |
+| **ARM Linux (aarch64)** with an NVIDIA card, such as the DGX Spark (GB10), built from source | [DGX Spark](docs/DGX_SPARK.md) |
 | Older cards and processors | [Older GPUs](docs/OLDER_GPUS.md), [Older CPUs](docs/INSTALL.md#older-cpus-experimental) |
 
 Also needed:
