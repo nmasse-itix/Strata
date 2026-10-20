@@ -1,6 +1,8 @@
 // src/kernels/cpu/portable.cpp - the CPU kernel symbols on a non-x86 build (aarch64: DGX Spark / GB10, Grace).
 //
 // Replaces expert.cpp, q2_avx2.cpp, iq_avx2.cpp, iq_avx512.cpp, kq_avx2.cpp and kq_avx1.cpp, which are AVX-only.
+// Every kernel those files add needs its stand-in here; the engine and the parity tests only call one after the CPU
+// probe (cpu_avx2_ok and the *_supported answers, all false here), so a stand-in that aborts is never reached.
 // What a native (GGUF) pack needs from this file is the activation quantizer (expert.cpp's scalar loop, bitwise
 // the same as its AVX-512 version) and the BF16 router dot (NEON).  The i-quant / k-quant multi-token kernels
 // report themselves unsupported, so native_expert.cpp takes ggml-cpu's vec_dot, which has NEON paths.  The
@@ -144,6 +146,11 @@ void iq512_rows(int, const uint8_t*, size_t, int, const void* const*, int, float
     unsupported("the AVX-512 i-quant kernel");
 }
 bool iq256_supported(int) noexcept { return false; }
+void iq256_gu_rows_exact_one(int, const uint8_t*, size_t, size_t, int, const void*, float*, int, int) {
+    unsupported("the AVX-2 i-quant kernel");
+}
+void q8k_quant_avx2(const float*, void*, int64_t) { unsupported("the AVX-2 Q8_K quantizer"); }
+void q8k_quant_avx1(const float*, void*, int64_t) { unsupported("the AVX Q8_K quantizer"); }
 int iq256_variant() noexcept { return 0; }
 int iq256_variants() noexcept { return 0; }
 void iq256_gu_rows_v(int, int, const uint8_t*, size_t, size_t, int, const void* const*, int, float* const*, int, int) {
