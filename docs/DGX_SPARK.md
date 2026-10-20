@@ -36,19 +36,8 @@ The same questions as on a PC. What setup does differently on a Spark:
 
 ## Docker
 
-Build the image on the Spark. `nvidia/cuda:13.0.0-devel-ubuntu24.04` has an arm64 build, and a build there compiles for sm_121 and passes `GGML_CPU_ARM_ARCH`. The host needs Docker and the NVIDIA Container Toolkit (the Spark image usually already has both) and a driver 580 or newer.
-
-```sh
-docker build -t strata .
-docker run --rm --gpus all -p 8080:8080 --ulimit memlock=-1 \
-  -v strata-data:/data -e MODEL=IQ2_XS -e CONTEXT=131072 strata
-```
-
-The first start downloads the model into the `strata-data` volume; the engine is already in the image. `-e CONTEXT=131072` is the 128K setting the Spark numbers above were measured with. At 64K and above, setup leaves KV streaming off on unified memory. Add `-e API_KEY=<secret>` before exposing the port. `-e FAMILY=unsloth -e MODEL=UD-Q4_K_XL -e CONTEXT=262144` is the other model that was run on a Spark.
-
-An image built on an x86 PC does not run on the Spark. Leave `CUDA_ARCHITECTURES` unset on the Spark; passing the desktop list (`75;80;86;89;120`) builds an engine with no GB10 cubin.
-
-A manual build, if you do not use setup:
+Not on ARM yet. The repository's `Dockerfile` packages a `linux-x86_64` engine and Terminal, so an image built on the
+Spark is not usable. Use setup, or the manual build:
 
 ```sh
 cmake -G Ninja -S . -B build -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=ON \
@@ -115,12 +104,52 @@ format, Q2_0 included, goes through ggml-cpu's NEON dot products; Strata's own m
 ~29 experts each layer routed: 19.7 tok/s, against 82.9 tok/s with every expert on the GPU, and the same greedy
 answer token for token.
 
+## An ARM server with a discrete card (NVIDIA L4)
+
+Here most experts do not fit on the GPU, so the ARM CPU computes the ones the cache misses.
+
+Measured on 2026-10-20: a KVM guest with 32 Neoverse-N1 cores in one socket (`asimddp`, no `i8mm`, SVE or `bf16`),
+124 GB of RAM and an NVIDIA L4 (24 GB, PCIe 4.0 x16, 24.7 GB/s host to device by the engine's probe), driver
+610.43.02. The engine is 0.1.46.1 with this port (engine sources as in commit `11db774b`; setup's source hash
+`4c204374574acd2b`), compiled by `./setup.sh --build` in the `nvidia/cuda:13.0.0-devel-ubuntu24.04` image (GCC 13.3,
+CUDA 13.0) with `GGML_CPU_ARM_ARCH=armv8.2-a+dotprod+fp16`. Model: Qwen3.8-Flash-Next **IQ3_XXS**, 64K context, the
+config setup wrote (`--kv int8`, MTP on, no images). The engine's CPU pool has 30 workers and the host thread. The
+GPU's cache holds 9,657 of the 24,576 experts (15.65 GiB).
+
+Each request starts with a fresh nonce, so none reuses another's prompt cache. 512 tokens written per request; 3 runs.
+The rates are the server's (`timings` in the answer).
+
+| | Result |
+| --- | ---: |
+| Decode, one request | 52.7, 53.3, 59.3 tok/s |
+| Two requests at once (`--parallel 2`), total | 51.1, 51.4, 51.9 tok/s (26.4-27.7 each) |
+| A 33,025-token prompt, read in | 22.7, 23.0, 23.1 s (1,430-1,454 tok/s) |
+
+- **The CPU computes few experts.** The cache is filled from the routing profile, so the experts that are used most
+  are on the GPU. In the decode runs, 93.3-96.2% of a request's experts were cache hits, 0.3-0.8% were read by the GPU
+  over PCIe, and the CPU computed 3.8-6.6% (`/metrics`: `hit_rate`, `pcie_share`). With two requests at once it
+  computed 4-17%.
+- **The CPU is not the limit.** `perf` over a 512-token answer: ggml-cpu's NEON dot products took 5.3% of the
+  engine's samples (`ggml_vec_dot_iq3_s_q8_K` 1.5%), and the pool's workers spent 88% waiting for work. The GPU's SM
+  use was 97-100% (`nvidia-smi dmon`).
+- **`--parallel 2` gains nothing here:** the two requests together decode about as fast as one alone.
+- **Checks on the same runs:** an OpenAI tool call (`get_weather`, `{"city":"Lyon","unit":"celsius"}`), a marker in
+  the middle of the 33K-token prompt retrieved in 3 of 3 runs, and a one-sentence answer.
+
+**A VM that shows every vCPU as its own socket gets one pool worker.** The same VM first ran with 32 sockets of one
+core. Every vCPU then had its own `physical_package_id`, so the engine kept its pool on the host thread's socket:
+`CPU pool: 1 workers by default (32 physical cores, ...; bounded by the host's CPU socket)`. Decode was 34.5, 39.9 and
+40.3 tok/s, and `--parallel 2` 34.1-35.0 tok/s in total. `"--pool-workers", "15"` in the `args` of the config setup
+writes gave 49.2, 50.1 and 53.5 tok/s (7 workers: 48.9 median, 31: 50.8). Give such a VM one socket, or set
+`--pool-workers`. The engine's PCIe probe measured 20.6 GB/s on that VM; why it differs from 24.7 GB/s was not
+checked (one guess, not measured: memory fragmentation on that VM).
+
 ## Not covered
 
-- Models other than IQ2_XS, IQ3_S and UD-Q4_K_XL: not run (their formats are covered: IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S,
-  IQ3_XXS, IQ3_S, IQ4_XS, IQ4_NL and Q2_0 experts all have ggml NEON paths).
+- Models other than IQ2_XS, IQ3_XXS, IQ3_S and UD-Q4_K_XL: not run (their formats are covered: IQ1_M, IQ2_XXS,
+  IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S, IQ4_XS, IQ4_NL and Q2_0 experts all have ggml NEON paths).
 - Images (`--vision`): built with the same CPU flags, not tested.
-- ARM CPUs without a CUDA GPU, and other ARM boards with an NVIDIA GPU: not tested.
+- ARM CPUs without a CUDA GPU: not tested. One ARM server with a discrete card was run (above).
 - The canonical Q2_0 pack (`experts.bin` in Strata's own layout) is x86-only. Setup's Q2_0 size on a Spark is the
   native GGUF pack, whose Q2_0 rows use ggml.
 
